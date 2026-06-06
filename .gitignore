@@ -1,0 +1,41 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Test / cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OCR model cache (downloaded on first run)
+.cache/
+models/
+
+# Local video samples (大きいので git 管理外)
+*.mp4
+*.mov
+*.mkv
+samples/
+
+# Frame extraction temp output
+frames/
+.frames/
+
+# Agent team artifacts
+.agent-output/
+
+# ローカルの収集結果・デバッグ生成物 (一時物)
+/result*.json
+/r*.json
+/debug_slots/
