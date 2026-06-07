@@ -75,7 +75,7 @@ def fuzzy_match_pokemon(
     if not ocr_name:
         return []
     norm_ocr = _normalize_ocr_species(ocr_name)
-    cands: list[PokemonCandidate] = []
+    cands: list[tuple[float, float, PokemonCandidate]] = []
     for p in master.pokemon:
         # 濁点/半濁点/小書きを畳んで OCR の読みブレ (グ↔ク, ガ↔カ 等) を吸収
         full = SequenceMatcher(None, norm_ocr, _kana_normalize(p.name)).ratio()
@@ -88,23 +88,32 @@ def fuzzy_match_pokemon(
         # 限り、ベース名を OCR 先頭と照合して高スコアを出し閾値を越えさせる.
         # トークン不在なら full のまま (低い) にして別フォーム/ベースを誤って
         # 押し上げない (トークン一致 かつ ベース先頭一致 の二重ゲート).
+        nbase = _kana_normalize(base)
+        prefix = (
+            SequenceMatcher(None, nbase, norm_ocr[: len(nbase)]).ratio()
+            if nbase
+            else 0.0
+        )
         if token:
             ntoken = _kana_normalize(token)
             if ntoken and ntoken in norm_ocr:
-                nbase = _kana_normalize(base)
-                prefix = (
-                    SequenceMatcher(None, nbase, norm_ocr[: len(nbase)]).ratio()
-                    if nbase
-                    else 0.0
-                )
                 name_score = max(full, prefix)
             else:
+                # 別フォームが指定されている → ベース先頭一致で誤って押し上げない
                 name_score = full
         else:
-            name_score = full
-        cands.append(PokemonCandidate(pokemon=p, score=name_score))
-    cands.sort(key=lambda c: c.score, reverse=True)
-    return cands[:top_k]
+            # フォーム無し: ボックス種族名行が「種族名 ◯◯のすがた」のように
+            # 姿名を併記しても (master に姿違いが分かれていない技プール共通の
+            # ポケ: ヤバソチャ等)、先頭のベース名一致で救済し閾値割れを防ぐ。
+            # 未知の姿名サフィックスにも列挙不要で耐える。
+            name_score = max(full, prefix)
+        cands.append(
+            (name_score, full, PokemonCandidate(pokemon=p, score=name_score))
+        )
+    # 同点は full ratio (より完全な一致) を優先し、原種が「種族名 姿名」併記の
+    # フォーム個体を同点で奪う事故 (例 ライチュウ アローラ → 原種ライチュウ) を防ぐ
+    cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [c for _ns, _full, c in cands[:top_k]]
 
 
 def read_box_species(
@@ -123,14 +132,15 @@ def read_box_species(
     results = ocr_region(image, layout.box_name, upscale_factor=3.0)
     texts = [t for r in results if len(t := r.text.strip()) >= 2]
     cands: list[PokemonCandidate] = []
-    for text in texts:
-        cands += fuzzy_match_pokemon(text, master, top_k=top_k)
     # フォーム持ちの種族名行はゲーム表示「ベース名 フォーム名」が OCR で別断片に
-    # 割れることがある (例 'ギルガルド' + 'シールドフォルム')。断片単位だと
-    # fuzzy_match_pokemon のフォームトークン判定がベース名と別文字列になり効かず、
-    # 正解が採用閾値未満で捨てられる。連結文字列でも照合してトークンを揃える。
+    # 割れる (例 'ヌメルゴン' + 'ヒスイのすがた')。断片 'ヌメルゴン' 単独は原種を
+    # 1.0 に押し上げフォームと同点で奪う (リージョンフォームが原種に化ける)。姿名を
+    # 含む連結照合はフォームを正しく判別するので、連結を断片より先に評価し、同点は
+    # 安定ソートで連結 (フォーム判別が効く側) を残す。
     if len(texts) >= 2:
         cands += fuzzy_match_pokemon(" ".join(texts), master, top_k=top_k)
+    for text in texts:
+        cands += fuzzy_match_pokemon(text, master, top_k=top_k)
     cands.sort(key=lambda c: c.score, reverse=True)
     # ポケモンID重複を除き最良のみ残す
     seen: set[int] = set()

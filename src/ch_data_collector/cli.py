@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-prompt",
         action="store_true",
-        help="曖昧な候補を対話確認せず top1 を採用 (CI向け)",
+        help="対話確認しない (CI向け)。種族特定は top1、曖昧な技 (閾値未満) は不採用",
     )
     return parser
 
@@ -137,13 +137,17 @@ def _resolve_ambiguous_moves(
     ambiguous: list[tuple[str, list]],
     no_prompt: bool,
 ) -> list[str]:
+    # --no-prompt では曖昧技 (accept_threshold 未満) を採用しない。低 score の OCR
+    # 誤読 (ゴミ raw が score 0.4-0.57 で最近傍技に着地) を top1 強制採用すると確定技に
+    # 偽技が混入する (実測: ピクシー raw='かつたへパーー'→オーバーヒート 0.43 等)。確定技
+    # (>=accept_threshold) は別経路で出力済み。曖昧技は対話時に選ばれたものだけ拾う
+    # (種族特定 _select_pokemon は 1 件確定が要るので no-prompt でも top1 を採るが、技は
+    # 複数かつ取りこぼし安全側でよく非対称)。
+    if no_prompt:
+        return []
     out: list[str] = []
     for raw, cands in ambiguous:
         if not cands:
-            continue
-        if no_prompt:
-            # 対話なしでは top1 を採用 (help の記載どおり, _select_pokemon と対称).
-            out.append(cands[0].move.name)
             continue
         choices = [
             f"{c.move.name}  (score={c.score:.2f})" for c in cands
@@ -222,6 +226,50 @@ def _emit_result(
         output[name] = confirmed
     print(f"  → {name}: {len(confirmed)} moves")
     return name
+
+
+def _merge_second_pass(
+    output: dict[str, list[str]],
+    seg_order: list[tuple[int, str]],
+    *,
+    min_coverage: float = 0.9,
+) -> None:
+    """同一個体の 2 周目以降のセグメント (unknown) を直前の確定ポケへ統合する.
+
+    技教え画面を複数回開く / 1 周目を閉じて開き直す等で、box を経由しない周回が
+    unknown になることがある。確定ポケを anchor として保持し、それに続く unknown を
+    順に anchor へ包含判定 → 成立すれば union 統合する。統合後 anchor の技集合は
+    広がるので、3 周目以降は「それまでの統合結果」と比較され、何周でも畳み込める。
+
+    判定: 間に別ポケの box 選択 (= 別の確定セグメント) が挟まらない隣接区間で、
+    技集合が対称的にほぼ包含 (小さい側の min_coverage 以上が大きい側に含まれる) なら
+    同一個体とみなす。どちらの周回が広くてもよい (union なので結果は全技)。包含が
+    崩れる別ポケは統合せず unknown のまま残し可視化する (黙ったデータ汚染を防ぐ安全弁。
+    anchor は維持し、さらなる周回に備える)。
+    """
+    anchor: str | None = None  # 連続 unknown 区間の統合先 (直前の確定ポケ名)
+    for seg_no, name in seg_order:
+        if name != "(unknown)":
+            anchor = name if name in output else None
+            continue
+        uk_key = f"(unknown {seg_no})"
+        if uk_key not in output or anchor is None or anchor not in output:
+            continue
+        uk_moves = set(output[uk_key])
+        anchor_moves = set(output[anchor])
+        small, big = sorted((uk_moves, anchor_moves), key=len)
+        if not small:
+            continue
+        coverage = len(small & big) / len(small)
+        if coverage < min_coverage:
+            continue  # 別個体の疑い → unknown を残す (anchor は維持)
+        merged = output[anchor] + [m for m in output[uk_key] if m not in anchor_moves]
+        output[anchor] = merged
+        del output[uk_key]
+        print(
+            f"  周回結合: {uk_key} → {anchor} "
+            f"(被覆率{coverage:.2f}, {len(anchor_moves)}+{len(uk_moves)}→{len(merged)})"
+        )
 
 
 def _write_output(output: dict[str, list[str]], path: Path) -> None:
@@ -367,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # フェーズ2: セグメント毎に collect → 逐次 output 書き込み
     output = {}
+    seg_order: list[tuple[int, str]] = []
     seg_no = 0
     for gi, (vids, _res, segs) in enumerate(group_specs):
         classifier = classifiers.get(gi)
@@ -375,8 +424,13 @@ def main(argv: list[str] | None = None) -> int:
             if seg_no not in wanted:
                 continue
             r = collect_segment(vids, master, config, seg, classifier)
-            _emit_result(output, r, seg_no, args.no_prompt, name_map)
+            name = _emit_result(output, r, seg_no, args.no_prompt, name_map)
+            seg_order.append((seg_no, name))
             _write_output(output, args.output)
+
+    # 同一個体の 2 周目 (unknown) を直前の確定ポケへ統合してから最終書き込み
+    _merge_second_pass(output, seg_order)
+    _write_output(output, args.output)
 
     print(f"\nwrote {args.output}")
     return 0
