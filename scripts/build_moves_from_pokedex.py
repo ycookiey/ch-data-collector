@@ -45,6 +45,12 @@ GEN_ORDER = [
     "LegendsZA",
 ]
 
+# towakey/pokedex に無いが Champions に実在する技の手動補完. towakey は SV 不在ポケの
+# 技を一部欠く (例: ガラルマッギョのトラバサミ). 公開ソースから再生成する原則の最小例外.
+SUPPLEMENT_MOVES = [
+    {"name": "トラバサミ", "type": "くさ", "pp": 15},
+]
+
 
 def _gen_rank(path: Path) -> int:
     """世代ディレクトリの新しさ順位 (大きいほど新しい).
@@ -139,6 +145,13 @@ def main() -> int:
             print(f"  表記ゆれ集約: {chosen!r} ← {dropped}")
 
     canonical = sorted(groups.values())
+    # towakey 欠落の Champions 実在技を補完 (既存と重複しないもののみ)
+    existing = set(canonical)
+    for s in SUPPLEMENT_MOVES:
+        if s["name"] not in existing:
+            union[s["name"]] = {"type": s["type"], "pp": s["pp"]}
+            canonical.append(s["name"])
+    canonical = sorted(canonical)
     moves_out = [
         {
             "id": i,
