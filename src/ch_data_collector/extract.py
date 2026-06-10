@@ -99,16 +99,23 @@ def extract_frames(
 
             stopped_at_end = False
             while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
                 ts = cumulative_offset + frame_idx / src_fps
                 if end is not None and ts >= end:
                     stopped_at_end = True
                     break
                 # 間引きグリッドはフレーム0基準. start 前の keyframe 余剰分は
                 # ts >= start で除外する (seek が start 手前に着地しても正確).
-                if frame_idx % step == 0 and (start is None or ts >= start):
+                wanted = frame_idx % step == 0 and (start is None or ts >= start)
+                if wanted:
+                    ret, frame = cap.read()
+                else:
+                    # 間引きで捨てるフレームは grab() のみ (デコードは進めるが
+                    # retrieve のフレーム構築・コピーを省く). 低 fps 指定時の
+                    # 読み飛ばしコストを下げる.
+                    ret = cap.grab()
+                if not ret:
+                    break
+                if wanted:
                     if out_dir is not None:
                         cv2.imwrite(
                             str(out_dir / f"f{global_index:05d}.png"), frame

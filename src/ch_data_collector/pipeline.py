@@ -19,6 +19,8 @@
   - OTHER 中はボックス種族名領域の差分が小さければ read_box_species を省く。
   - 画面分類は両 kind のヘッダテンプレが揃えば matchTemplate で OCR を回避し、
     テンプレで判定不能なフレームのみ OCR にフォールバックする。
+  - スクロール中で領域全体の差分が大きいフレームも、行クロップ単位の
+    キャッシュ (learnset.RowTextCache) で既読行の再認識を省く。
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ from ch_data_collector.classify import (
 )
 from ch_data_collector.extract import extract_frames
 from ch_data_collector.learnset import (
+    RowTextCache,
     read_rows,
     resolve_moves,
 )
@@ -334,6 +337,9 @@ def collect_segment(
     move_list_frames = 0
     prev_slot_thumb: np.ndarray | None = None
     classify_ocr_count = 0
+    # 行クロップ単位の OCR キャッシュ. 連続スクロール中はスロット領域全体の
+    # 差分スキップが効かないが、行単位では同一クロップが続くためここで削る.
+    row_cache = RowTextCache()
 
     for frame in frames:
         if layout is None:
@@ -360,6 +366,7 @@ def collect_segment(
             layout,
             master,
             accept_threshold=config.accept_threshold,
+            ocr_cache=row_cache,
         )
         for n in names:
             votes[n] += 1
