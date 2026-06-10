@@ -15,16 +15,19 @@
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass
+import weakref
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Iterable
 
 import cv2
 import numpy as np
+from rapidfuzz import process as _rf_process
+from rapidfuzz.distance import Indel as _Indel
 
 from ch_data_collector.master_data import MasterData, Move
-from ch_data_collector.ocr import OcrResult, ocr_region, recognize_in_regions
+from ch_data_collector.ocr import OcrResult, crop, ocr_region, recognize_in_regions
 from ch_data_collector.screen_layouts import Box, Layout
 from ch_data_collector.type_icon import observed_slot_type
 
@@ -41,24 +44,73 @@ class MoveCandidate:
 _TYPE_MATCH_BONUS = 0.15
 
 
+@dataclass
+class _MoveIndex:
+    """master 1 つ分の技名照合インデックス (正規化済み名 + 結果メモ).
+
+    同じ OCR テキストの fuzzy match はフレームを跨いで何度も繰り返されるため、
+    (text, top_k, observed_type) で結果をメモ化する。ユニーク入力は 1 動画あたり
+    高々数百件なのでサイズ上限は設けない。
+    """
+
+    moves: tuple[Move, ...]
+    normalized: tuple[str, ...]
+    cache: dict[
+        tuple[str, int, str | None], tuple[MoveCandidate, ...]
+    ] = field(default_factory=dict)
+
+
+_move_indexes: weakref.WeakKeyDictionary[MasterData, _MoveIndex] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _move_index(master: MasterData) -> _MoveIndex:
+    idx = _move_indexes.get(master)
+    if idx is None:
+        idx = _MoveIndex(
+            moves=master.moves,
+            normalized=tuple(_kana_normalize(m.name) for m in master.moves),
+        )
+        _move_indexes[master] = idx
+    return idx
+
+
+# Indel 類似度の上界性をスコア比較に使う際、浮動小数の丸めで上界が真のスコアを
+# 下回らないための余裕.
+_BOUND_EPS = 1e-9
+
+
 def fuzzy_match_move(
     ocr_text: str,
     master: MasterData,
     top_k: int = 3,
     observed_type: str | None = None,
 ) -> list[MoveCandidate]:
+    """OCR テキストを全技マスタへ fuzzy match し top_k 候補を返す.
+
+    スコアは文字種正規化 (_kana_normalize) 後の SequenceMatcher ratio。
+    全技に対し ratio を素朴に計算すると 1 回 ~30ms かかり全体のボトルネックに
+    なるため、Indel 類似度 (rapidfuzz, C++) を上界プレフィルタに使う:
+    Indel 類似度 = 2*LCS/全長 ≥ 2*M/全長 = ratio (M は Ratcliff-Obershelp の
+    一致文字数で M ≤ LCS)。上界の降順に真の ratio を計算し、上界が現 top_k 最低
+    キーを厳密に下回った時点で打ち切る。返す内容・順序は全件計算と完全一致する
+    (同点は master 順を保持)。
+    """
     if not ocr_text:
         return []
-    # 文字種正規化を OCR/master 両側に適用してから類似度計算.
-    # 「ねっぷう / ねつぷう」「フェイント / フエイント」等の読みブレを吸収.
+    idx = _move_index(master)
+    key = (ocr_text, top_k, observed_type)
+    cached = idx.cache.get(key)
+    if cached is not None:
+        return list(cached)
     normalized_ocr = _kana_normalize(ocr_text)
-    cands: list[MoveCandidate] = []
-    for m in master.moves:
-        normalized_master = _kana_normalize(m.name)
-        score = SequenceMatcher(
-            None, normalized_ocr, normalized_master
-        ).ratio()
-        cands.append(MoveCandidate(move=m, score=score))
+    bounds = _rf_process.cdist(
+        [normalized_ocr],
+        idx.normalized,
+        scorer=_Indel.normalized_similarity,
+        dtype=np.float64,
+    )[0]
     if observed_type:
         # タイプタイブレーカ (soft): 観測タイプ一致候補に名前類似度へ加点する.
         # 誤読が別タイプの実在技に着地する事故 (ぼうふう→ほうふく等) を弾くのが狙い.
@@ -67,14 +119,37 @@ def fuzzy_match_move(
         # 同タイプ技で上書きしてしまう. 加点方式なら名前類似が僅差のときだけタイプで
         # 決まり、名前が明らかに優る候補は守られる (加点は順位付けのみで、accept 判定に
         # 使う MoveCandidate.score は据え置き).
-        cands.sort(
-            key=lambda c: c.score
-            + (_TYPE_MATCH_BONUS if c.move.type == observed_type else 0.0),
-            reverse=True,
+        bonus = np.fromiter(
+            (
+                _TYPE_MATCH_BONUS if m.type == observed_type else 0.0
+                for m in idx.moves
+            ),
+            dtype=np.float64,
+            count=len(idx.moves),
         )
     else:
-        cands.sort(key=lambda c: c.score, reverse=True)
-    return cands[:top_k]
+        bonus = np.zeros(len(idx.moves))
+    upper = bounds + bonus + _BOUND_EPS
+    order = np.argsort(-upper, kind="stable")
+    # selected = (sort_key 降順, master index 昇順) の top_k。素朴版の
+    # 安定ソート (同点は master 順) と同じ順位付けになる.
+    selected: list[tuple[float, int, float]] = []
+    for oi in order:
+        i = int(oi)
+        if len(selected) >= top_k and selected[top_k - 1][0] > upper[i]:
+            break  # 残りの sort_key は top_k 最低値を厳密に下回る
+        score = SequenceMatcher(
+            None, normalized_ocr, idx.normalized[i]
+        ).ratio()
+        selected.append((score + float(bonus[i]), i, score))
+        selected.sort(key=lambda t: (-t[0], t[1]))
+        del selected[top_k:]
+    result = tuple(
+        MoveCandidate(move=idx.moves[i], score=score)
+        for _sort_key, i, score in selected
+    )
+    idx.cache[key] = result
+    return list(result)
 
 
 def _best_text(results: list[OcrResult]) -> str:
@@ -185,6 +260,80 @@ def _resolve_slot_text(bucket: list[OcrResult]) -> tuple[str, float]:
         return "", 0.0
     best = max(bucket, key=lambda r: r.confidence)
     return best.text.strip(), float(best.confidence)
+
+
+# 行クロップキャッシュのサムネ寸法 (w, h) とセル分割数 (cols, rows).
+# 一致判定は「セル平均絶対差の最大値」(cellmax)。全体平均だと
+# 「きあいだめ/きあいだま」のような 1 グリフ局所差 (め/ま) がノイズに埋もれて
+# 別技を誤一致させる (実測 min 1.63 で平均差閾値を下回り技を取り逃した)。
+# セル単位の最大値なら局所差が薄まらず、実測で別技ペア最小 39.5 vs 閾値 12.0
+# (3.3 倍マージン)。同一技のノイズ・±1px 整列揺れは全セルに薄く分散するため
+# 閾値内に収まる。一致しない場合は再 OCR されるだけで精度影響はない。
+_ROW_THUMB_SIZE = (96, 24)
+_ROW_CACHE_GRID = (12, 3)
+_ROW_CACHE_CELL_DIFF_THRESHOLD = 12.0
+
+
+@dataclass
+class RowTextCache:
+    """整列済み行クロップ → OCR 生テキストのキャッシュ (1セグメント分).
+
+    行クロップは技名テキストの暗文字帯中心に整列するため、同じ技の行は
+    フレームを跨いでほぼ同一画像になる。縮小サムネのセル平均差最大値 (cellmax)
+    が閾値未満の既知クロップは再認識せず前回のテキストを使う。連続スクロール中
+    はスロット領域全体が毎フレーム変化して pipeline 側のフレーム差分スキップが
+    効かないが、行単位では同一内容が数十フレーム続くため、ここで認識回数を削る。
+
+    キャッシュするのは OCR 生テキストのみ。タイプ色サンプルと fuzzy match は
+    フレーム毎に行う (fuzzy match は別途メモ化されるので実コストはない)。
+
+    照合は全エントリとの差分を numpy 一括計算で行う (Python ループの線形探索は
+    エントリが数百件に育つと OCR の節約分を食い潰す)。
+    """
+
+    texts: list[str] = field(default_factory=list)
+    # スクロール中の整列揺れで同一技にも複数エントリが育つ. 異常な動画でも
+    # メモリと照合コストが暴れない上限 (通常 1 セグメントの技は数十種).
+    max_entries: int = 1024
+    _thumbs: np.ndarray | None = None  # (capacity, h, w) int16
+    _count: int = 0
+
+    def lookup(self, thumb: np.ndarray) -> str | None:
+        if self._count == 0:
+            return None
+        diffs = np.abs(self._thumbs[: self._count] - thumb)
+        cols, rows = _ROW_CACHE_GRID
+        n, h, w = diffs.shape
+        cellmax = (
+            diffs.reshape(n, rows, h // rows, cols, w // cols)
+            .mean(axis=(2, 4))
+            .max(axis=(1, 2))
+        )
+        best = int(np.argmin(cellmax))
+        if float(cellmax[best]) < _ROW_CACHE_CELL_DIFF_THRESHOLD:
+            return self.texts[best]
+        return None
+
+    def store(self, thumb: np.ndarray, text: str) -> None:
+        if self._count >= self.max_entries:
+            return
+        if self._thumbs is None or self._count == len(self._thumbs):
+            cap = 64 if self._thumbs is None else len(self._thumbs) * 2
+            grown = np.zeros((cap, *thumb.shape), dtype=np.int16)
+            if self._thumbs is not None:
+                grown[: self._count] = self._thumbs[: self._count]
+            self._thumbs = grown
+        self._thumbs[self._count] = thumb
+        self.texts.append(text)
+        self._count += 1
+
+
+def _row_thumb(image: np.ndarray, box: Box) -> np.ndarray:
+    sub = crop(image, box)
+    gray = cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY) if sub.ndim == 3 else sub
+    return cv2.resize(
+        gray, _ROW_THUMB_SIZE, interpolation=cv2.INTER_AREA
+    ).astype(np.int16)
 
 
 def detect_row_tops(image: np.ndarray, layout: Layout) -> list[tuple[int, int]]:
@@ -300,11 +449,13 @@ def read_rows(
     master: MasterData | None = None,
     *,
     accept_threshold: float = 0.7,
+    ocr_cache: RowTextCache | None = None,
 ) -> list[str]:
     """表示中の各行を実位置で読み取り、正規化済み技名のリストを返す.
 
     固定スロット位置でなく detect_row_tops で検出した実位置を使うため、
     連続スクロール中の中途半端なフレームでも正しく読める。空読みは除外。
+    ocr_cache を渡すと、過去に読んだ行とほぼ同一のクロップは再認識しない。
     """
     tops = detect_row_tops(image, layout)
     if not tops:
@@ -328,17 +479,37 @@ def read_rows(
         icon_tops.append(icon_top)
     if not name_boxes:
         return []
-    bucket_results = recognize_in_regions(
-        image, name_boxes, allowlist=_TECHNIQUE_ALLOWLIST
-    )
+    # キャッシュ照合: 既知クロップの行は認識・fallback とも省く. miss 行だけを
+    # y 昇順のまま recognize_in_regions に渡す (同関数は y 昇順前提).
+    raw_texts: list[str | None] = [None] * len(name_boxes)
+    thumbs: list[np.ndarray | None] = [None] * len(name_boxes)
+    miss: list[int] = list(range(len(name_boxes)))
+    if ocr_cache is not None:
+        miss = []
+        for i, b in enumerate(name_boxes):
+            thumbs[i] = _row_thumb(image, b)
+            cached = ocr_cache.lookup(thumbs[i])
+            if cached is not None:
+                raw_texts[i] = cached
+            else:
+                miss.append(i)
+    if miss:
+        bucket_results = recognize_in_regions(
+            image, [name_boxes[i] for i in miss], allowlist=_TECHNIQUE_ALLOWLIST
+        )
+        for j, i in enumerate(miss):
+            text, conf = _resolve_slot_text(bucket_results[j])
+            if conf < _RECOGNIZE_TRUST_CONFIDENCE:
+                fallback = ocr_region(image, name_boxes[i], upscale_factor=2.0)
+                fb_text = _best_text(fallback)
+                if fb_text:
+                    text = fb_text
+            raw_texts[i] = text
+            if ocr_cache is not None and thumbs[i] is not None:
+                ocr_cache.store(thumbs[i], text)
     out: list[str] = []
     for i in range(len(name_boxes)):
-        text, conf = _resolve_slot_text(bucket_results[i])
-        if conf < _RECOGNIZE_TRUST_CONFIDENCE:
-            fallback = ocr_region(image, name_boxes[i], upscale_factor=2.0)
-            fb_text = _best_text(fallback)
-            if fb_text:
-                text = fb_text
+        text = raw_texts[i] or ""
         if master is not None and text:
             # タイプアイコン色は実アイコン位置由来の行上端 (icon_top, 未クランプ) を
             # 基準にサンプルする. type_icon_dy は move_slot_ys[i] (固定スロット上端)

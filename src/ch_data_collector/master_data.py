@@ -34,7 +34,10 @@ class Pokemon:
     base_species_id: int | None
 
 
-@dataclass(frozen=True)
+# eq=False: 同一性ベースの等価/ハッシュにする. learnset の照合インデックスが
+# master を WeakKeyDictionary のキーにするため、値ベースだと参照のたびに
+# 全 moves/pokemon の再ハッシュが走る (1回数百µs × 毎行毎フレームで効く).
+@dataclass(frozen=True, eq=False)
 class MasterData:
     moves: tuple[Move, ...]
     pokemon: tuple[Pokemon, ...]
