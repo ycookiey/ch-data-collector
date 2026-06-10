@@ -46,10 +46,24 @@ _OCR_KANJI_TO_KANA = str.maketrans(
     }
 )
 
+# ゲーム内ボックス種族名行は性別フォームを「オスのすがた」「メスのすがた」と
+# テキストで表示する。_kana_normalize 後 (が→か 等の濁点フォールド適用済み) の
+# パターンを ♂/♀ 記号に置換し、master 名「ニャオニクス♂」等と照合できるようにする。
+# ひらがな読み (おすのすかた) も OCR の読みブレとして対象に含める。
+_GENDER_SUFFIX_MAP: list[tuple[str, str]] = [
+    (_kana_normalize("オスのすがた"), "♂"),
+    (_kana_normalize("メスのすがた"), "♀"),
+    (_kana_normalize("おすのすがた"), "♂"),
+    (_kana_normalize("めすのすがた"), "♀"),
+]
+
 
 def _normalize_ocr_species(ocr_name: str) -> str:
-    """種族名 OCR テキストを照合用に正規化する (漢字字形フォールド + かな正規化)."""
-    return _kana_normalize(ocr_name.translate(_OCR_KANJI_TO_KANA))
+    """種族名 OCR テキストを照合用に正規化する (漢字字形フォールド + かな正規化 + 性別サフィックス変換)."""
+    result = _kana_normalize(ocr_name.translate(_OCR_KANJI_TO_KANA))
+    for src, dst in _GENDER_SUFFIX_MAP:
+        result = result.replace(src, dst)
+    return result
 
 
 def _base_form_tokens(name: str) -> tuple[str, str]:
@@ -132,16 +146,15 @@ def read_box_species(
     results = ocr_region(image, layout.box_name, upscale_factor=3.0)
     texts = [t for r in results if len(t := r.text.strip()) >= 2]
     cands: list[PokemonCandidate] = []
-    # フォーム持ちの種族名行はゲーム表示「ベース名 フォーム名」が OCR で別断片に
-    # 割れる (例 'ヌメルゴン' + 'ヒスイのすがた')。断片 'ヌメルゴン' 単独は原種を
-    # 1.0 に押し上げフォームと同点で奪う (リージョンフォームが原種に化ける)。姿名を
-    # 含む連結照合はフォームを正しく判別するので、連結を断片より先に評価し、同点は
-    # 安定ソートで連結 (フォーム判別が効く側) を残す。
+    # 種族名行はゲーム表示「ベース名 フォーム名」が OCR で別断片に割れることがある
+    # (例 'ロトム' + 'ヒートロトム', 'ニャオニクス' + 'メスのすがた')。
+    # 連結照合を断片照合より先に評価し、同スコア時は名前が長い(具体的な)候補を
+    # 優先する (ヒートロトム > ロトム, ニャオニクス♀ > ニャオニクス♂ 等)。
     if len(texts) >= 2:
         cands += fuzzy_match_pokemon(" ".join(texts), master, top_k=top_k)
     for text in texts:
         cands += fuzzy_match_pokemon(text, master, top_k=top_k)
-    cands.sort(key=lambda c: c.score, reverse=True)
+    cands.sort(key=lambda c: (c.score, len(c.pokemon.name)), reverse=True)
     # ポケモンID重複を除き最良のみ残す
     seen: set[int] = set()
     out: list[PokemonCandidate] = []
