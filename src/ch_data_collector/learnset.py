@@ -17,14 +17,13 @@ from __future__ import annotations
 import unicodedata
 import weakref
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Iterable
 
 import cv2
 import numpy as np
 from rapidfuzz import process as _rf_process
-from rapidfuzz.distance import Indel as _Indel
+from rapidfuzz.distance import Levenshtein as _Lev
 
 from ch_data_collector.master_data import MasterData, Move
 from ch_data_collector.ocr import OcrResult, crop, ocr_region, recognize_in_regions
@@ -38,7 +37,7 @@ class MoveCandidate:
     score: float
 
 
-# タイプタイブレーカの加点幅. 名前類似度 (SequenceMatcher ratio, 0..1) にこの値を
+# タイプタイブレーカの加点幅. 名前類似度 (Levenshtein normalized similarity, 0..1) にこの値を
 # 加えて順位付けする. 0.15 は OCR 誤読で生じる僅差 (例 0.75 vs 0.85) は同タイプ側へ
 # 倒しつつ、名前が明確に優る候補 (score 差 > 0.15) は観測タイプが誤っても守る妥協値.
 _TYPE_MATCH_BONUS = 0.15
@@ -76,11 +75,6 @@ def _move_index(master: MasterData) -> _MoveIndex:
     return idx
 
 
-# Indel 類似度の上界性をスコア比較に使う際、浮動小数の丸めで上界が真のスコアを
-# 下回らないための余裕.
-_BOUND_EPS = 1e-9
-
-
 def fuzzy_match_move(
     ocr_text: str,
     master: MasterData,
@@ -89,13 +83,12 @@ def fuzzy_match_move(
 ) -> list[MoveCandidate]:
     """OCR テキストを全技マスタへ fuzzy match し top_k 候補を返す.
 
-    スコアは文字種正規化 (_kana_normalize) 後の SequenceMatcher ratio。
-    全技に対し ratio を素朴に計算すると 1 回 ~30ms かかり全体のボトルネックに
-    なるため、Indel 類似度 (rapidfuzz, C++) を上界プレフィルタに使う:
-    Indel 類似度 = 2*LCS/全長 ≥ 2*M/全長 = ratio (M は Ratcliff-Obershelp の
-    一致文字数で M ≤ LCS)。上界の降順に真の ratio を計算し、上界が現 top_k 最低
-    キーを厳密に下回った時点で打ち切る。返す内容・順序は全件計算と完全一致する
-    (同点は master 順を保持)。
+    スコアは文字種正規化 (_kana_normalize) 後の Levenshtein 正規化類似度.
+    位置依存の編集距離なので、連続部分文字列を共有しても位置がずれた候補 (例:
+    'なゆきり' vs 'こなゆき'=共通"なゆき"だが全体としては別物) を低く評価する.
+    LCS 系 (SequenceMatcher/Indel) は連続部分文字列重視で位置ずれに鈍感で、
+    OCR 1 文字ブレが別技に誤マッチする事故 (なゆきり→こなゆき等) を起こしていた.
+    rapidfuzz の cdist で全候補を一括計算する (C++ 実装で素朴ループより十分速い).
     """
     if not ocr_text:
         return []
@@ -105,10 +98,10 @@ def fuzzy_match_move(
     if cached is not None:
         return list(cached)
     normalized_ocr = _kana_normalize(ocr_text)
-    bounds = _rf_process.cdist(
+    scores = _rf_process.cdist(
         [normalized_ocr],
         idx.normalized,
-        scorer=_Indel.normalized_similarity,
+        scorer=_Lev.normalized_similarity,
         dtype=np.float64,
     )[0]
     if observed_type:
@@ -129,24 +122,13 @@ def fuzzy_match_move(
         )
     else:
         bonus = np.zeros(len(idx.moves))
-    upper = bounds + bonus + _BOUND_EPS
-    order = np.argsort(-upper, kind="stable")
-    # selected = (sort_key 降順, master index 昇順) の top_k。素朴版の
-    # 安定ソート (同点は master 順) と同じ順位付けになる.
-    selected: list[tuple[float, int, float]] = []
-    for oi in order:
-        i = int(oi)
-        if len(selected) >= top_k and selected[top_k - 1][0] > upper[i]:
-            break  # 残りの sort_key は top_k 最低値を厳密に下回る
-        score = SequenceMatcher(
-            None, normalized_ocr, idx.normalized[i]
-        ).ratio()
-        selected.append((score + float(bonus[i]), i, score))
-        selected.sort(key=lambda t: (-t[0], t[1]))
-        del selected[top_k:]
+    sort_keys = scores + bonus
+    # 上位 top_k を安定ソート (同点は master 順を保持) で抽出.
+    # np.argsort は score 昇順なので符号反転し、stable で同点 master 順.
+    order = np.argsort(-sort_keys, kind="stable")[:top_k]
     result = tuple(
-        MoveCandidate(move=idx.moves[i], score=score)
-        for _sort_key, i, score in selected
+        MoveCandidate(move=idx.moves[int(i)], score=float(scores[int(i)]))
+        for i in order
     )
     idx.cache[key] = result
     return list(result)
