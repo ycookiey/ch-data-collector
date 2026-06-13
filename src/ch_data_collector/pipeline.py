@@ -38,6 +38,10 @@ _MIN_VOTES = 1
 # ボックス画面で読んだ種族名を採用する最低スコア.
 _BOX_SPECIES_MIN = 0.7
 
+import threading
+from queue import Queue
+from typing import Iterator
+
 import cv2
 import numpy as np
 
@@ -63,6 +67,39 @@ from ch_data_collector.screen_layouts import Box, Layout, resolve_layout
 _SLOT_THUMB_W = 32
 _SLOT_THUMB_H = 80  # スロット領域は縦長 (6行 × 65px)
 _SLOT_DIFF_THRESHOLD = 2.0
+
+# decoder スレッドが先回りデコードして積むフレームキューのサイズ。
+# GPU OCR (~60ms) と CPU デコード (~10-20ms) を重ねて GPU 待ち時間を埋める。
+# 大きすぎると frame.image (numpy 配列) のメモリが嵩むので 8 程度に抑える。
+_DECODE_QUEUE_MAX = 8
+
+
+def _prefetch_frames(frames: Iterator) -> Iterator:
+    """generator のデコードを別スレッドで先回りする (queue で backpressure).
+
+    main スレッドが OCR で待っている間に decoder スレッドが次のフレームを
+    読んでおく。GPU 推論中は GIL が解放されるので Python スレッドでも
+    デコード時間と OCR 時間を重ねられる。"""
+    q: Queue = Queue(maxsize=_DECODE_QUEUE_MAX)
+    sentinel = object()
+
+    def producer() -> None:
+        try:
+            for f in frames:
+                q.put(f)
+        except BaseException as e:
+            q.put(("__exc__", e))
+        finally:
+            q.put(sentinel)
+
+    threading.Thread(target=producer, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is sentinel:
+            return
+        if isinstance(item, tuple) and len(item) == 2 and item[0] == "__exc__":
+            raise item[1]
+        yield item
 
 
 def _slot_region(image: np.ndarray, layout: Layout) -> np.ndarray:
@@ -199,11 +236,13 @@ def index_segments(
     省く。境界ロジックは process_frames と同じ (DETAIL 再来 = 境界、OTHER で
     ボックス種族名を pending 保持、最新優先)。
     """
-    frames = extract_frames(
-        videos,
-        fps=config.index_fps,
-        start=config.start,
-        end=config.end,
+    frames = _prefetch_frames(
+        extract_frames(
+            videos,
+            fps=config.index_fps,
+            start=config.start,
+            end=config.end,
+        )
     )
     segments: list[Segment] = []
     layout: Layout | None = None
@@ -344,12 +383,14 @@ def collect_segment(
     margin = 2.0 / config.index_fps
     start = max(0.0, seg.movelist_start - margin)
     end = seg.movelist_end + margin
-    frames = extract_frames(
-        videos,
-        fps=config.fps,
-        out_dir=config.frames_dir,
-        start=start,
-        end=end,
+    frames = _prefetch_frames(
+        extract_frames(
+            videos,
+            fps=config.fps,
+            out_dir=config.frames_dir,
+            start=start,
+            end=end,
+        )
     )
 
     layout: Layout | None = None
