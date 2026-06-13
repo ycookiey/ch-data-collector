@@ -252,18 +252,31 @@ def index_segments(
 
     prev_box_thumb: np.ndarray | None = None
     cached_kind: ScreenKind = ScreenKind.OTHER
+    prev_header_thumb: np.ndarray | None = None
+    prev_classify_kind: ScreenKind | None = None
 
     for frame in frames:
         if layout is None:
             h, w = frame.image.shape[:2]
             layout = resolve_layout(w, h)
 
+        # ヘッダ領域が前フレームと事実上同じなら分類結果を流用
+        # (matchTemplate も OCR フォールバックも両方スキップ).
+        # 連続フレームのヘッダは事実上同一なので OTHER 含む全 kind で hit する。
+        cur_header_thumb = _region_thumb(frame.image, layout.header)
         kind: ScreenKind | None = None
-        if classifier.is_ready():
-            kind = classifier.classify(frame.image, layout)
-        if kind is None:
-            kind = classify_screen(frame.image, layout)
-            classifier.remember(kind, frame.image, layout)
+        if prev_classify_kind is not None and _frames_similar(
+            prev_header_thumb, cur_header_thumb
+        ):
+            kind = prev_classify_kind
+        else:
+            if classifier.is_ready():
+                kind = classifier.classify(frame.image, layout)
+            if kind is None:
+                kind = classify_screen(frame.image, layout)
+                classifier.remember(kind, frame.image, layout)
+            prev_classify_kind = kind
+        prev_header_thumb = cur_header_thumb
         prev_kind = cached_kind
         cached_kind = kind
 
@@ -344,6 +357,8 @@ def collect_segment(
     move_list_frames = 0
     prev_slot_thumb: np.ndarray | None = None
     classify_ocr_count = 0
+    prev_header_thumb: np.ndarray | None = None
+    prev_classify_kind: ScreenKind | None = None
     # 行クロップ単位の OCR キャッシュ. 連続スクロール中はスロット領域全体の
     # 差分スキップが効かないが、行単位では同一クロップが続くためここで削る.
     row_cache = RowTextCache()
@@ -352,13 +367,23 @@ def collect_segment(
         if layout is None:
             h, w = frame.image.shape[:2]
             layout = resolve_layout(w, h)
+        # ヘッダ領域が前フレームと事実上同じなら分類結果を流用
+        # (matchTemplate も OCR フォールバックも両方スキップ).
+        cur_header_thumb = _region_thumb(frame.image, layout.header)
         kind: ScreenKind | None = None
-        if classifier.is_ready():
-            kind = classifier.classify(frame.image, layout)
-        if kind is None:
-            kind = classify_screen(frame.image, layout)
-            classify_ocr_count += 1
-            classifier.remember(kind, frame.image, layout)
+        if prev_classify_kind is not None and _frames_similar(
+            prev_header_thumb, cur_header_thumb
+        ):
+            kind = prev_classify_kind
+        else:
+            if classifier.is_ready():
+                kind = classifier.classify(frame.image, layout)
+            if kind is None:
+                kind = classify_screen(frame.image, layout)
+                classify_ocr_count += 1
+                classifier.remember(kind, frame.image, layout)
+            prev_classify_kind = kind
+        prev_header_thumb = cur_header_thumb
         if kind != ScreenKind.MOVE_LIST:
             prev_slot_thumb = None
             continue
