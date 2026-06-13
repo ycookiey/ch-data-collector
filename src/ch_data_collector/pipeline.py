@@ -228,7 +228,7 @@ def index_segments(
         cur_ml_count = 0
 
     def close_segment() -> None:
-        nonlocal have_open
+        nonlocal have_open, pending_box
         # 技一覧フレームが無い区間は出さない (process_frames の「votes 空なら
         # commit しない」と対称。DETAIL フラッシュで開いた空区間を捨てる)。
         if have_open and cur_ml_count > 0:
@@ -241,6 +241,13 @@ def index_segments(
                     move_list_frame_count=cur_ml_count,
                 )
             )
+        elif have_open and cur_pokemon and not pending_box:
+            # 空区間捨てる時、box species (cur_pokemon) は時間的にこの区間と独立
+            # した手前のOTHER期間で確定した情報なので次区間に持ち越す
+            # (DETAIL→1FのOTHER誤判定→DETAIL の bunny hop で unknown 化するのを防ぐ)。
+            # OTHER 期間で別 box へ移動した場合は pending_box が新 box で上書き
+            # されているのでこの分岐に入らず誤特定にならない。
+            pending_box = cur_pokemon
         have_open = False
 
     prev_box_thumb: np.ndarray | None = None
