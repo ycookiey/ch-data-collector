@@ -54,6 +54,7 @@ from ch_data_collector.extract import extract_frames
 from ch_data_collector.learnset import (
     RowTextCache,
     read_rows,
+    read_rows_batched,
     resolve_moves,
 )
 from ch_data_collector.master_data import MasterData, Move
@@ -67,6 +68,11 @@ from ch_data_collector.screen_layouts import Box, Layout, resolve_layout
 _SLOT_THUMB_W = 32
 _SLOT_THUMB_H = 80  # スロット領域は縦長 (6行 × 65px)
 _SLOT_DIFF_THRESHOLD = 2.0
+
+# 行 OCR を複数フレームで束ねるバッファサイズ. recognize の起動 overhead を分散
+# し GPU 推論スループットを上げる. 大きすぎると segment 末尾の flush 残量が多く
+# 平均応答が悪化、メモリ消費も増えるので 4-8 程度に抑える.
+_ROW_OCR_BATCH = 8
 
 # decoder スレッドが先回りデコードして積むフレームキューのサイズ。
 # GPU OCR (~60ms) と CPU デコード (~10-20ms) を重ねて GPU 待ち時間を埋める。
@@ -404,6 +410,26 @@ def collect_segment(
     # 差分スキップが効かないが、行単位では同一クロップが続くためここで削る.
     row_cache = RowTextCache()
 
+    # OCR バッチ buffer: read_rows を _ROW_OCR_BATCH 枚分ためてから 1回の
+    # recognize にまとめる. recognize の起動 overhead を分散する.
+    ocr_buffer: list[np.ndarray] = []
+
+    def flush_ocr_buffer() -> None:
+        if not ocr_buffer or layout is None:
+            ocr_buffer.clear()
+            return
+        results = read_rows_batched(
+            ocr_buffer,
+            layout,
+            master,
+            accept_threshold=config.accept_threshold,
+            ocr_cache=row_cache,
+        )
+        for names in results:
+            for n in names:
+                votes[n] += 1
+        ocr_buffer.clear()
+
     for frame in frames:
         if layout is None:
             h, w = frame.image.shape[:2]
@@ -427,6 +453,10 @@ def collect_segment(
         prev_header_thumb = cur_header_thumb
         if kind != ScreenKind.MOVE_LIST:
             prev_slot_thumb = None
+            # MOVE_LIST 区間が一旦切れたら buffer を flush しておく (segment
+            # 境界をまたぐ batch を避ける).
+            if ocr_buffer:
+                flush_ocr_buffer()
             continue
         cur_slot_thumb = _slot_region_thumb(frame.image, layout)
         if _frames_similar(prev_slot_thumb, cur_slot_thumb):
@@ -434,16 +464,14 @@ def collect_segment(
             move_list_frames += 1
             continue
         prev_slot_thumb = cur_slot_thumb
-        names = read_rows(
-            frame.image,
-            layout,
-            master,
-            accept_threshold=config.accept_threshold,
-            ocr_cache=row_cache,
-        )
-        for n in names:
-            votes[n] += 1
+        ocr_buffer.append(frame.image)
         move_list_frames += 1
+        if len(ocr_buffer) >= _ROW_OCR_BATCH:
+            flush_ocr_buffer()
+
+    # 末尾の残り buffer
+    if ocr_buffer:
+        flush_ocr_buffer()
 
     voted = [n for n, c in votes.items() if c >= _MIN_VOTES]
     accepted, ambiguous = resolve_moves(

@@ -83,6 +83,106 @@ def joined_text(results: list[OcrResult]) -> str:
     return "".join(r.text for r in results)
 
 
+def recognize_in_multi_images(
+    images: list[np.ndarray],
+    boxes_per_image: list[list[Box]],
+    *,
+    allowlist: str | None = None,
+) -> list[list[list[OcrResult]]]:
+    """複数 image の行 box 群を vertical stack で連結し1回の認識で batch 処理する.
+
+    GPU 推論の起動 overhead を分散するために read_rows_batched から呼ばれる.
+    各 image 内の boxes は y 昇順前提 (recognize_in_regions と同じ). スタック後
+    の全体 box 列も y 昇順なので、結果は index 対応で各 image・各 box に戻せる.
+
+    返り値: out[image_index][box_index] = list[OcrResult]
+    """
+    if not images:
+        return []
+    if len(images) != len(boxes_per_image):
+        raise ValueError("images と boxes_per_image の長さが一致しない")
+
+    # 全 image を grayscale 化して縦に連結. それぞれの box に y_offset を足す.
+    gray_list: list[np.ndarray] = []
+    offsets: list[int] = []  # 各 image の y 開始位置
+    cur_y = 0
+    for img in images:
+        if img.ndim == 3:
+            g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            g = img
+        offsets.append(cur_y)
+        gray_list.append(g)
+        cur_y += g.shape[0]
+    # 横幅は image ごとに違うことが想定されないが、念のため最大幅で揃える
+    max_w = max(g.shape[1] for g in gray_list)
+    padded = []
+    for g in gray_list:
+        if g.shape[1] < max_w:
+            pad = np.zeros((g.shape[0], max_w - g.shape[1]), dtype=g.dtype)
+            padded.append(np.concatenate([g, pad], axis=1))
+        else:
+            padded.append(g)
+    stacked = np.concatenate(padded, axis=0)
+
+    # box index → (image_index, local_box_index)
+    flat_boxes: list[tuple[int, int, list[int]]] = []
+    for i, (off, boxes) in enumerate(zip(offsets, boxes_per_image)):
+        for j, b in enumerate(boxes):
+            flat_boxes.append(
+                (i, j, [b.x, b.x + b.w, b.y + off, b.y + b.h + off])
+            )
+    if not flat_boxes:
+        return [[[] for _ in bs] for bs in boxes_per_image]
+
+    horizontal_list = [hl for (_, _, hl) in flat_boxes]
+    engine = _engine()
+    raw = engine.recognize(
+        stacked,
+        horizontal_list=horizontal_list,
+        free_list=[],
+        detail=1,
+        batch_size=len(flat_boxes),
+        allowlist=allowlist,
+    )
+
+    out: list[list[list[OcrResult]]] = [
+        [[] for _ in bs] for bs in boxes_per_image
+    ]
+    if not raw:
+        return out
+    if len(raw) == len(flat_boxes):
+        # 全体 y 昇順前提で index 対応 (recognize_in_regions と同じロジック)
+        for k, (poly, text, conf) in enumerate(raw):
+            i, j, _ = flat_boxes[k]
+            pts = (
+                tuple((int(x), int(y)) for (x, y) in poly) if poly else ()
+            )
+            out[i][j].append(
+                OcrResult(text=str(text), confidence=float(conf), box=pts)
+            )
+        return out
+    # 件数不一致時のフォールバック: 重心 y で最近傍 box へ割り当て
+    for poly, text, conf in raw:
+        if not poly:
+            continue
+        pts_arr = np.asarray(poly, dtype=float)
+        cy = float(pts_arr[:, 1].mean())
+        best_k, best_d = -1, float("inf")
+        for k, (_, _, hl) in enumerate(flat_boxes):
+            box_cy = (hl[2] + hl[3]) / 2.0
+            d = abs(cy - box_cy)
+            if d < best_d:
+                best_d, best_k = d, k
+        if best_k >= 0:
+            i, j, _ = flat_boxes[best_k]
+            pts = tuple((int(x), int(y)) for (x, y) in poly)
+            out[i][j].append(
+                OcrResult(text=str(text), confidence=float(conf), box=pts)
+            )
+    return out
+
+
 def recognize_in_regions(
     image: np.ndarray,
     boxes: list[Box],

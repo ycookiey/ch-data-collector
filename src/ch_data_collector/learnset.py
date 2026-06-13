@@ -26,7 +26,13 @@ from rapidfuzz import process as _rf_process
 from rapidfuzz.distance import Levenshtein as _Lev
 
 from ch_data_collector.master_data import MasterData, Move
-from ch_data_collector.ocr import OcrResult, crop, ocr_region, recognize_in_regions
+from ch_data_collector.ocr import (
+    OcrResult,
+    crop,
+    ocr_region,
+    recognize_in_multi_images,
+    recognize_in_regions,
+)
 from ch_data_collector.screen_layouts import Box, Layout
 from ch_data_collector.type_icon import observed_slot_type
 
@@ -515,6 +521,133 @@ def read_rows(
             )
         if text:
             out.append(text)
+    return out
+
+
+def read_rows_batched(
+    images: list[np.ndarray],
+    layout: Layout,
+    master: MasterData | None = None,
+    *,
+    accept_threshold: float = 0.7,
+    ocr_cache: RowTextCache | None = None,
+) -> list[list[str]]:
+    """複数 image の行を batch OCR で読み取り、各 image ごとの技名リストを返す.
+
+    read_rows と挙動互換で、複数 image の row OCR を1回の recognize に統合する.
+    GPU 推論起動 overhead が image 数分の1に減りスループットが上がる. cache hit
+    は image ごとに行うので、buffer 内で同一クロップが続いても二重認識しない.
+    """
+    if not images:
+        return []
+
+    spacing = layout.move_slot_ys[1] - layout.move_slot_ys[0]
+    bottom_limit = layout.move_slot_ys[-1] + layout.move_slot_h
+
+    per_boxes: list[list[Box]] = []
+    per_icon_tops: list[list[int]] = []
+    per_thumbs: list[list[np.ndarray | None]] = []
+    per_texts: list[list[str | None]] = []
+    per_miss: list[list[int]] = []
+
+    for image in images:
+        tops = detect_row_tops(image, layout)
+        if not tops:
+            per_boxes.append([])
+            per_icon_tops.append([])
+            per_thumbs.append([])
+            per_texts.append([])
+            per_miss.append([])
+            continue
+        boxes: list[Box] = []
+        icon_tops: list[int] = []
+        for text_top, icon_top in tops:
+            tctr = _text_band_center(image, layout, text_top, spacing)
+            if tctr is None:
+                continue
+            by = max(0, tctr - layout.move_slot_h // 2)
+            if by + layout.move_slot_h > bottom_limit:
+                continue
+            boxes.append(
+                Box(
+                    layout.move_slot_x,
+                    by,
+                    layout.move_slot_w,
+                    layout.move_slot_h,
+                )
+            )
+            icon_tops.append(icon_top)
+        thumbs: list[np.ndarray | None] = [None] * len(boxes)
+        cached_texts: list[str | None] = [None] * len(boxes)
+        miss: list[int] = list(range(len(boxes)))
+        if ocr_cache is not None:
+            miss = []
+            for i, b in enumerate(boxes):
+                thumbs[i] = _row_thumb(image, b)
+                cached = ocr_cache.lookup(thumbs[i])
+                if cached is not None:
+                    cached_texts[i] = cached
+                else:
+                    miss.append(i)
+        per_boxes.append(boxes)
+        per_icon_tops.append(icon_tops)
+        per_thumbs.append(thumbs)
+        per_texts.append(cached_texts)
+        per_miss.append(miss)
+
+    # batch recognize: cache miss だけ集めて 1 回で
+    miss_imgs: list[np.ndarray] = []
+    miss_boxes: list[list[Box]] = []
+    miss_image_idx: list[int] = []
+    for img_i, miss in enumerate(per_miss):
+        if miss:
+            miss_imgs.append(images[img_i])
+            miss_boxes.append([per_boxes[img_i][i] for i in miss])
+            miss_image_idx.append(img_i)
+
+    if miss_imgs:
+        results_per_image = recognize_in_multi_images(
+            miss_imgs, miss_boxes, allowlist=_TECHNIQUE_ALLOWLIST
+        )
+        for k, img_i in enumerate(miss_image_idx):
+            miss = per_miss[img_i]
+            image = images[img_i]
+            boxes = per_boxes[img_i]
+            thumbs = per_thumbs[img_i]
+            cached_texts = per_texts[img_i]
+            results = results_per_image[k]
+            for j, i in enumerate(miss):
+                text, conf = _resolve_slot_text(results[j])
+                if conf < _RECOGNIZE_TRUST_CONFIDENCE:
+                    fallback = ocr_region(
+                        image, boxes[i], upscale_factor=2.0
+                    )
+                    fb_text = _best_text(fallback)
+                    if fb_text:
+                        text = fb_text
+                cached_texts[i] = text
+                if ocr_cache is not None and thumbs[i] is not None:
+                    ocr_cache.store(thumbs[i], text)
+
+    out: list[list[str]] = []
+    for img_i, image in enumerate(images):
+        names: list[str] = []
+        boxes = per_boxes[img_i]
+        icon_tops = per_icon_tops[img_i]
+        cached_texts = per_texts[img_i]
+        for i in range(len(boxes)):
+            text = cached_texts[i] or ""
+            if master is not None and text:
+                obs_type = observed_slot_type(image, layout, icon_tops[i])
+                text = normalize_slot_text(
+                    text,
+                    master,
+                    accept_threshold=accept_threshold,
+                    observed_type=obs_type,
+                )
+            if text:
+                names.append(text)
+        out.append(names)
     return out
 
 
