@@ -185,6 +185,8 @@ class PipelineConfig:
     # フェーズ1 (index) のフレームレート. 境界検出と種族名特定のみ行うので低fpsで
     # 足りる (DETAIL/ボックス画面は数秒持続する)。フェーズ2 (collect) は config.fps.
     index_fps: float = 5.0
+    # 行認識のバックエンド. None で ocr.get_default_recognizer() に委譲.
+    recognizer: object | None = None
 
 
 def run_pipeline(
@@ -425,6 +427,7 @@ def collect_segment(
             master,
             accept_threshold=config.accept_threshold,
             ocr_cache=row_cache,
+            recognizer=config.recognizer,
         )
         for names in results:
             for n in names:

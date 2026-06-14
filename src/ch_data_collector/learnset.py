@@ -28,7 +28,9 @@ from rapidfuzz.distance import Levenshtein as _Lev
 from ch_data_collector.master_data import MasterData, Move
 from ch_data_collector.ocr import (
     OcrResult,
+    Recognizer,
     crop,
+    get_default_recognizer,
     ocr_region,
     recognize_in_multi_images,
     recognize_in_regions,
@@ -531,12 +533,14 @@ def read_rows_batched(
     *,
     accept_threshold: float = 0.7,
     ocr_cache: RowTextCache | None = None,
+    recognizer: Recognizer | None = None,
 ) -> list[list[str]]:
-    """複数 image の行を batch OCR で読み取り、各 image ごとの技名リストを返す.
+    """複数 image の行を batch 認識で読み取り、各 image ごとの技名リストを返す.
 
-    read_rows と挙動互換で、複数 image の row OCR を1回の recognize に統合する.
-    GPU 推論起動 overhead が image 数分の1に減りスループットが上がる. cache hit
-    は image ごとに行うので、buffer 内で同一クロップが続いても二重認識しない.
+    read_rows と挙動互換で、複数 image の row 認識を1回の batch 呼び出しに
+    統合する. 起動 overhead が image 数分の1に減りスループットが上がる.
+    cache hit は image ごとに行うので、buffer 内で同一クロップが続いても
+    二重認識しない. recognizer 未指定時は get_default_recognizer() を使う.
     """
     if not images:
         return []
@@ -606,7 +610,8 @@ def read_rows_batched(
             miss_image_idx.append(img_i)
 
     if miss_imgs:
-        results_per_image = recognize_in_multi_images(
+        rec = recognizer if recognizer is not None else get_default_recognizer()
+        results_per_image = rec.recognize_batch(
             miss_imgs, miss_boxes, allowlist=_TECHNIQUE_ALLOWLIST
         )
         for k, img_i in enumerate(miss_image_idx):

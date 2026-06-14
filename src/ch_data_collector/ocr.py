@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Protocol
 
 import cv2
 import numpy as np
@@ -303,3 +304,77 @@ def recognize_in_regions(
                 OcrResult(text=str(text), confidence=float(conf), box=pts)
             )
     return out
+
+
+class Recognizer(Protocol):
+    """複数 image の行 box 群をバッチで認識する抽象 OCR API.
+
+    実装を差し替えることで、推論バックエンドを切り替えられる. 入出力は
+    image-major の三重リストで、image[i] の box[j] に対する認識結果
+    (list[OcrResult]) を返す. allowlist は実装にヒントとして渡され、
+    実装ごとに尊重するか無視するかを決める.
+    """
+
+    def recognize_batch(
+        self,
+        images: list[np.ndarray],
+        boxes_per_image: list[list[Box]],
+        *,
+        allowlist: str | None = None,
+    ) -> list[list[list[OcrResult]]]:
+        ...
+
+
+class EasyOcrRecognizer:
+    """汎用テキスト認識 (EasyOCR) ベースの Recognizer 実装.
+
+    任意のテキストを認識して raw text + confidence を返す. 後段の fuzzy
+    match で技名へ正規化する経路と組み合わせて使う. allowlist は
+    EasyOCR.recognize の引数として渡され文字種制約として作用する.
+    """
+
+    def recognize_batch(
+        self,
+        images: list[np.ndarray],
+        boxes_per_image: list[list[Box]],
+        *,
+        allowlist: str | None = None,
+    ) -> list[list[list[OcrResult]]]:
+        return recognize_in_multi_images(
+            images, boxes_per_image, allowlist=allowlist
+        )
+
+
+class IdentityRecognizer:
+    """別の Recognizer を wrap してそのまま渡す identity (no-op) wrapper.
+
+    Recognizer 抽象化の動作確認・テスト用. recognize_batch は inner に
+    そのまま委譲する. fallback chain や confidence-based gating を後付け
+    する decorator のひな型としても流用できる.
+    """
+
+    def __init__(self, inner: Recognizer) -> None:
+        self.inner = inner
+
+    def recognize_batch(
+        self,
+        images: list[np.ndarray],
+        boxes_per_image: list[list[Box]],
+        *,
+        allowlist: str | None = None,
+    ) -> list[list[list[OcrResult]]]:
+        return self.inner.recognize_batch(
+            images, boxes_per_image, allowlist=allowlist
+        )
+
+
+_DEFAULT_RECOGNIZER: Recognizer | None = None
+
+
+def get_default_recognizer() -> Recognizer:
+    """既定の Recognizer を返す (シングルトン). PipelineConfig.recognizer
+    で明示指定がない場合のフォールバック."""
+    global _DEFAULT_RECOGNIZER
+    if _DEFAULT_RECOGNIZER is None:
+        _DEFAULT_RECOGNIZER = EasyOcrRecognizer()
+    return _DEFAULT_RECOGNIZER
