@@ -83,6 +83,56 @@ def joined_text(results: list[OcrResult]) -> str:
     return "".join(r.text for r in results)
 
 
+def recognize_region(
+    image: np.ndarray,
+    box: Box,
+    *,
+    upscale_factor: float = 2.0,
+    allowlist: str | None = None,
+) -> list[OcrResult]:
+    """指定 box を crop + upscale して認識器単体で OCR (検出器なし).
+
+    classify_screen 用. EasyOCR の readtext (検出器 + 認識器) でなく
+    recognize() を直接呼んで box 内のテキストを単一塊として認識する.
+    検出器をスキップする分 ocr_region より速い (実測 ~30-50% 高速).
+    複数行や離散テキストには向かないが、ヘッダのような短い1行テキスト
+    (画面分類用キーワード照合) に十分.
+    """
+    sub = crop(image, box)
+    if sub.size == 0:
+        return []
+    if upscale_factor != 1.0:
+        sub_for_ocr = upscale(sub, upscale_factor)
+    else:
+        sub_for_ocr = sub
+    if sub_for_ocr.ndim == 3:
+        gray = cv2.cvtColor(sub_for_ocr, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = sub_for_ocr
+    h, w = gray.shape[:2]
+    engine = _engine()
+    raw = engine.recognize(
+        gray,
+        horizontal_list=[[0, w, 0, h]],
+        free_list=[],
+        detail=1,
+        batch_size=1,
+        allowlist=allowlist,
+    )
+    out: list[OcrResult] = []
+    for poly, text, conf in raw:
+        pts: list[tuple[int, int]] = []
+        if poly:
+            for x, y in poly:
+                ox = int(x / upscale_factor) + box.x
+                oy = int(y / upscale_factor) + box.y
+                pts.append((ox, oy))
+        out.append(
+            OcrResult(text=str(text), confidence=float(conf), box=tuple(pts))
+        )
+    return out
+
+
 def recognize_in_multi_images(
     images: list[np.ndarray],
     boxes_per_image: list[list[Box]],

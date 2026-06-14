@@ -13,7 +13,7 @@ from enum import Enum
 import cv2
 import numpy as np
 
-from ch_data_collector.ocr import crop, joined_text, ocr_region
+from ch_data_collector.ocr import crop, joined_text, recognize_region
 from ch_data_collector.screen_layouts import Layout
 
 
@@ -35,7 +35,9 @@ MOVE_LIST_KEYWORDS = (
 
 
 def classify_screen(image: np.ndarray, layout: Layout) -> ScreenKind:
-    results = ocr_region(image, layout.header, upscale_factor=2.0)
+    # 検出器をスキップし認識器のみでヘッダを読む (ocr_region 比 ~30-50% 速い).
+    # ヘッダは「教える技」「能力」等の短い1行テキストなので検出器不要.
+    results = recognize_region(image, layout.header, upscale_factor=2.0)
     text = joined_text(results)
     if any(kw in text for kw in MOVE_LIST_KEYWORDS):
         return ScreenKind.MOVE_LIST
