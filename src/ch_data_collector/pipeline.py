@@ -187,6 +187,10 @@ class PipelineConfig:
     index_fps: float = 5.0
     # 行認識のバックエンド. None で ocr.get_default_recognizer() に委譲.
     recognizer: object | None = None
+    # 各確定行を (image, text, observed_type) で受け取る optional callable.
+    # None なら通知しない. 行クロップと認識結果を副産物として取り出すフック
+    # (デバッグや外部処理用).
+    row_sink: object | None = None
 
 
 def run_pipeline(
@@ -428,6 +432,7 @@ def collect_segment(
             accept_threshold=config.accept_threshold,
             ocr_cache=row_cache,
             recognizer=config.recognizer,
+            row_sink=config.row_sink,
         )
         for names in results:
             for n in names:

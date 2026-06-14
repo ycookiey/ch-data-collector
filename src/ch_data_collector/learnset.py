@@ -534,6 +534,7 @@ def read_rows_batched(
     accept_threshold: float = 0.7,
     ocr_cache: RowTextCache | None = None,
     recognizer: Recognizer | None = None,
+    row_sink=None,
 ) -> list[list[str]]:
     """複数 image の行を batch 認識で読み取り、各 image ごとの技名リストを返す.
 
@@ -541,6 +542,9 @@ def read_rows_batched(
     統合する. 起動 overhead が image 数分の1に減りスループットが上がる.
     cache hit は image ごとに行うので、buffer 内で同一クロップが続いても
     二重認識しない. recognizer 未指定時は get_default_recognizer() を使う.
+
+    row_sink: 各行の (image, text, observed_type) を受け取る optional callable.
+    確定済の行 (text 非空) のみ通知される. None なら no-op.
     """
     if not images:
         return []
@@ -642,6 +646,7 @@ def read_rows_batched(
         cached_texts = per_texts[img_i]
         for i in range(len(boxes)):
             text = cached_texts[i] or ""
+            obs_type = None
             if master is not None and text:
                 obs_type = observed_slot_type(image, layout, icon_tops[i])
                 text = normalize_slot_text(
@@ -652,6 +657,10 @@ def read_rows_batched(
                 )
             if text:
                 names.append(text)
+                if row_sink is not None:
+                    b = boxes[i]
+                    crop = image[b.y : b.y + b.h, b.x : b.x + b.w]
+                    row_sink(crop, text, obs_type)
         out.append(names)
     return out
 
