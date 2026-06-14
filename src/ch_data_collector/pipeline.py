@@ -17,8 +17,9 @@
     をスキップする (静止フレームの重複 OCR を省く)。分類自体は毎フレーム行い、
     MOVE_LIST→DETAIL/OTHER の遷移を取りこぼさない。
   - OTHER 中はボックス種族名領域の差分が小さければ read_box_species を省く。
-  - 画面分類は両 kind のヘッダテンプレが揃えば matchTemplate で OCR を回避し、
-    テンプレで判定不能なフレームのみ OCR にフォールバックする。
+  - 画面分類は kind ごとに最大 32 個のヘッダ thumb を保持するマルチテンプレ
+    DB (TemplateClassifier) の MSE 比較で OCR を回避し、未知パターンのフレーム
+    のみ OCR にフォールバックして新規 thumb を覚える。
   - スクロール中で領域全体の差分が大きいフレームも、行クロップ単位の
     キャッシュ (learnset.RowTextCache) で既読行の再認識を省く。
 """
@@ -306,7 +307,7 @@ def index_segments(
             layout = resolve_layout(w, h)
 
         # ヘッダ領域が前フレームと事実上同じなら分類結果を流用
-        # (matchTemplate も OCR フォールバックも両方スキップ).
+        # (MSE 比較も OCR フォールバックも両方スキップ).
         # 連続フレームのヘッダは事実上同一なので OTHER 含む全 kind で hit する。
         cur_header_thumb = _region_thumb(frame.image, layout.header)
         kind: ScreenKind | None = None
@@ -435,7 +436,7 @@ def collect_segment(
             h, w = frame.image.shape[:2]
             layout = resolve_layout(w, h)
         # ヘッダ領域が前フレームと事実上同じなら分類結果を流用
-        # (matchTemplate も OCR フォールバックも両方スキップ).
+        # (MSE 比較も OCR フォールバックも両方スキップ).
         cur_header_thumb = _region_thumb(frame.image, layout.header)
         kind: ScreenKind | None = None
         if prev_classify_kind is not None and _frames_similar(
