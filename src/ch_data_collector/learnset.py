@@ -458,17 +458,18 @@ def read_rows(
     # テキストが見つからない行 (空スロット) は除外。
     name_boxes: list[Box] = []
     icon_tops: list[int] = []  # タイプ色サンプル基準 (未クランプの実アイコン行上端)
-    # 正規最下段スロットの bottom を超える行は除外 (画面下端の UI/背景グラデが
-    # クロップ下端に混入し、fuzzy match が別技に誤着地する事象を物理的に防ぐ。
-    # スクロール過渡で最下段に半分入りかけのフレームを弾く。union で他フレームに
+    # 正規最上段・最下段スロットの範囲を超える行は除外 (画面端の UI/背景グラデが
+    # クロップに混入し、fuzzy match が別技に誤着地する事象を物理的に防ぐ。
+    # スクロール過渡で半分入りかけのフレームを弾く。union で他フレームに
     # 同技が出れば失われない)。
+    top_limit = layout.move_slot_ys[0]
     bottom_limit = layout.move_slot_ys[-1] + layout.move_slot_h
     for text_top, icon_top in tops:
         tctr = _text_band_center(image, layout, text_top, spacing)
         if tctr is None:
             continue
         by = max(0, tctr - layout.move_slot_h // 2)
-        if by + layout.move_slot_h > bottom_limit:
+        if by < top_limit or by + layout.move_slot_h > bottom_limit:
             continue
         name_boxes.append(
             Box(layout.move_slot_x, by, layout.move_slot_w, layout.move_slot_h)
@@ -550,6 +551,7 @@ def read_rows_batched(
         return []
 
     spacing = layout.move_slot_ys[1] - layout.move_slot_ys[0]
+    top_limit = layout.move_slot_ys[0]
     bottom_limit = layout.move_slot_ys[-1] + layout.move_slot_h
 
     per_boxes: list[list[Box]] = []
@@ -574,7 +576,7 @@ def read_rows_batched(
             if tctr is None:
                 continue
             by = max(0, tctr - layout.move_slot_h // 2)
-            if by + layout.move_slot_h > bottom_limit:
+            if by < top_limit or by + layout.move_slot_h > bottom_limit:
                 continue
             boxes.append(
                 Box(
