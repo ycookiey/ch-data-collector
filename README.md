@@ -28,4 +28,4 @@ uv run ch-data-collector video.mp4 -o learnset.json --fps 60
 
 ## ライセンス
 
-コードおよび構造化データは [MIT License](LICENSE) です。技マスタ `data/master/moves.json` は [towakey/pokedex](https://github.com/towakey/pokedex)（MIT）に由来します。ポケモンの著作物（技名・画面等）は (株) ポケモン / 任天堂 / ゲームフリーク / クリーチャーズ に帰属し、本リポジトリはその権利を主張しません。
+コードおよび構造化データは [MIT License](LICENSE) です。技マスタ `data/master/moves.json` は [towakey/pokedex](https://github.com/towakey/pokedex)（MIT）、ポケモン名一覧 `data/master/pokemon.json` は [pokemon-champions-data](https://github.com/ycookiey/pokemon-champions-data)（CC0）の `data/pokemon.json` に由来します。ポケモンの著作物（技名・画面等）は (株) ポケモン / 任天堂 / ゲームフリーク / クリーチャーズ に帰属し、本リポジトリはその権利を主張しません。
