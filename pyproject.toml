@@ -19,6 +19,9 @@ dependencies = [
     "torchvision>=0.26.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/ycookiey/ch-data-collector"
+
 [project.scripts]
 ch-data-collector = "ch_data_collector:main"
 

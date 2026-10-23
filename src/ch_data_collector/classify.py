@@ -47,9 +47,9 @@ def classify_screen(image: np.ndarray, layout: Layout) -> ScreenKind:
 
 
 _HEADER_THUMB_SIZE = (40, 12)
-# ヘッダ thumb 同士の MSE しきい値. 動的要素 (HP gauge 等) の揺れを許容しつつ
-# 異 kind の混同を防ぐ. classify は最小 MSE が この値未満なら hit と判定し、
-# remember は既存テンプレの最小 MSE が この値以上なら新規追加する.
+# ヘッダthumb同士の画素の平均絶対差のしきい値. 動的要素(HP gauge等)の揺れを許容しつつ
+# 異なるkindの混同を防ぐ. classifyは最小の差がこの値未満ならhitと判定し、
+# rememberは既存テンプレとの最小の差がこの値以上なら新規追加する.
 _HEADER_MSE_THRESHOLD = 5.0
 # kind ごとに保持するテンプレ thumb の最大数. DETAIL の HP gauge 動的要素や
 # OTHER 多様性 (box / menu / transition) をカバーする上限.
@@ -58,19 +58,18 @@ _TEMPLATE_LIMIT_PER_KIND = 32
 
 @dataclass
 class TemplateClassifier:
-    """ヘッダ thumb (40x12) の MSE で画面分類するマルチテンプレ DB.
+    """ヘッダthumb(40x12)の画素の平均絶対差で画面分類するマルチテンプレDB.
 
     各 kind ごとに最大 _TEMPLATE_LIMIT_PER_KIND 個の thumb を保持し、
-    新フレームの thumb と全テンプレの MSE を計算して最小値の kind を返す.
+    新フレームのthumbと全テンプレの差を計算して、差が最小のkindを返す.
 
-    旧実装 (kind あたり 1 テンプレ + matchTemplate) は DETAIL ヘッダ内の動的
-    要素 (HP gauge / 状態異常アイコン) でしきい値を切らず大量に OCR フォール
-    バックしていた (測定で classify_screen 113/232 = 49% が DETAIL での
-    フォールバック). マルチテンプレに変えて MSE 比較に切り替えることで
-    OTHER のバリエーション (box / menu / transition / black) も同じ枠で扱える.
+    kindごとに複数のテンプレを持つのは、DETAILのヘッダではHPゲージや状態異常の
+    アイコンが変わり、OTHERにはボックス・メニュー・遷移中・黒の画面があるため.
+    kindごとに1枚のテンプレで測ると、classify_screenを呼んだ232回のうち113回は、
+    DETAILのフレームがテンプレに一致しなかった回だった.
 
-    比較は 40x12 = 480 px の MSE で 1 ペア あたり <0.01ms. 上限 32 でも
-    classify は <1ms/frame.
+    比較は40x12 = 480pxの差で1ペアあたり<0.01ms. 上限32でも
+    classifyは<1ms/frame.
     """
 
     mse_threshold: float = _HEADER_MSE_THRESHOLD
