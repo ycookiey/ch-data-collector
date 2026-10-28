@@ -1,4 +1,4 @@
-"""RapidOCR で test.mp4 の代表フレームを読んで結果をダンプする (動作確認用).
+"""フレームの画像をEasyOCRで読み、認識した文字と位置を表示する (動作確認用).
 
 Usage:
     uv run python scripts/probe_ocr.py <frame.png> [<frame.png> ...]

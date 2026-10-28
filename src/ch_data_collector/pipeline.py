@@ -13,12 +13,12 @@
 (連続スクロール対応のため固定スロットでなく動的行検出 + 投票方式)。
 
 高速化:
-  - MOVE_LIST 中はスロット領域の縮小サムネ差分 (MSE) が小さければ read_rows
+  - MOVE_LIST中はスロット領域の縮小サムネの画素の平均絶対差が小さければread_rows
     をスキップする (静止フレームの重複 OCR を省く)。分類自体は毎フレーム行い、
     MOVE_LIST→DETAIL/OTHER の遷移を取りこぼさない。
   - OTHER 中はボックス種族名領域の差分が小さければ read_box_species を省く。
   - 画面分類は kind ごとに最大 32 個のヘッダ thumb を保持するマルチテンプレ
-    DB (TemplateClassifier) の MSE 比較で OCR を回避し、未知パターンのフレーム
+    DB(TemplateClassifier)との画素の差の比較でOCRを回避し、未知パターンのフレーム
     のみ OCR にフォールバックして新規 thumb を覚える。
   - スクロール中で領域全体の差分が大きいフレームも、行クロップ単位の
     キャッシュ (learnset.RowTextCache) で既読行の再認識を省く。

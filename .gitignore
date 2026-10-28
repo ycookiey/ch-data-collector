@@ -1,4 +1,4 @@
-# Python-generated files
+# Pythonの生成物
 __pycache__/
 *.py[oc]
 build/
@@ -6,36 +6,36 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# 仮想環境
 .venv
 
-# IDE / editor
+# エディタ
 .vscode/
 .idea/
 
-# Test / cache
+# テストとツールのキャッシュ
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 
-# OCR model cache (downloaded on first run)
+# キャッシュとモデルのファイル
 .cache/
 models/
 
-# Local video samples (大きいので git 管理外)
+# 手元の動画
 *.mp4
 *.mov
 *.mkv
 samples/
 
-# Frame extraction temp output
+# 抽出したフレーム
 frames/
 .frames/
 
-# Agent team artifacts
+# エージェントの作業ファイル
 .agent-output/
 
-# ローカルの収集結果・デバッグ生成物 (一時物)
+# 手元の収集結果とデバッグ用の出力
 /result*.json
 /r*.json
 /debug_slots/
