@@ -44,7 +44,9 @@ def extract_frames(
 ) -> Iterator[FrameRef]:
     """動画を fps に間引きしてフレームを yield する.
 
-    fps が None なら間引かず、各動画の全フレームを返す。out_dir 指定時は PNG 保存もする (デバッグ用)。複数ファイルは連結扱いし、
+    fps が None なら間引かず、各動画の全フレームを返す。
+
+    out_dir 指定時は PNG 保存もする (デバッグ用)。複数ファイルは連結扱いし、
     timestamp は連結後の通算秒を持つ。
 
     start/end (連結後の通算秒) を指定するとその区間 [start, end) だけを返す。

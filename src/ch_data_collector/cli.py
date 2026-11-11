@@ -70,7 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--fps",
         type=float,
         default=None,
-        help="技一覧を読む fps. 既定は動画の fps (全フレームを読み、スクロール中の行を取りこぼさない)",
+        help="フェーズ2 (技一覧の読み取り) の fps. 既定は動画の fps で、全フレームを読む."
+        " 処理が重いときは下げられるが、スクロール中の行を読み落としやすくなる",
     )
     parser.add_argument(
         "--start",
@@ -266,19 +267,32 @@ def _write_output(output: dict[str, list[str]], path: Path) -> None:
     )
 
 
+def _quote(arg: str) -> str:
+    return f'"{arg}"' if " " in arg else arg
+
+
 def _report_unknown(
-    output: dict[str, list[str]], output_path: Path, segments_path: Path
+    output: dict[str, list[str]],
+    output_path: Path,
+    segments_path: Path,
+    videos: list[Path],
 ) -> None:
-    """出力から外した "(unknown N)" の区間と、読み直す方法を表示する."""
+    """出力から外した "(unknown N)" のセグメントと、候補から選び直す方法を表示する."""
     unknown = [k for k in output if _is_unknown(k)]
     if not unknown:
         return
-    print(f"\n種族を特定できなかった {len(unknown)} 区間は {output_path} に含めていない:")
-    for k in unknown:
-        print(f"  {k}: {len(output[k])} moves")
     print(
-        "  読み直すには、区間の番号を指定して別のファイルへ出力する: "
-        f"--segments {segments_path} --only <番号> -o <別のファイル>"
+        f"\n種族を特定できなかった {len(unknown)} セグメントは "
+        f"{output_path} に含めていない:"
+    )
+    for k in unknown:
+        print(f"  {k}: {len(output[k])} 技")
+    video_args = " ".join(_quote(str(v)) for v in videos)
+    print(
+        "  種族を候補から選び直すには、--no-prompt を付けずにセグメント番号を指定し、"
+        "別のファイルへ出力する (候補が1つも無かったセグメントは同じ結果になる):\n"
+        f"    ch-data-collector {video_args} --segments {_quote(str(segments_path))}"
+        " --only <セグメント番号> -o <別のファイル>"
     )
 
 
@@ -431,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     _write_output(output, args.output)
 
     print(f"\nwrote {args.output}")
-    _report_unknown(output, args.output, seg_path)
+    _report_unknown(output, args.output, seg_path, args.videos)
     return 0
 
 
