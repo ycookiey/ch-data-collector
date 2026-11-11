@@ -176,7 +176,9 @@ class Segment:
 
 @dataclass
 class PipelineConfig:
-    fps: float = 5.0
+    # フェーズ2 (collect) のフレームレート. None なら動画の fps (全フレーム) で読み、
+    # 連続スクロール中の行を取りこぼさない.
+    fps: float | None = None
     frames_dir: Path | None = None
     accept_threshold: float = 0.7
     verbose: bool = False
