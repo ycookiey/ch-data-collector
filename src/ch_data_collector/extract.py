@@ -37,12 +37,14 @@ def _safe_fps(raw: float) -> float:
 
 def extract_frames(
     video_paths: list[Path],
-    fps: float = 5.0,
+    fps: float | None = 5.0,
     out_dir: Path | None = None,
     start: float | None = None,
     end: float | None = None,
 ) -> Iterator[FrameRef]:
     """動画を fps に間引きしてフレームを yield する.
+
+    fps が None なら間引かず、各動画の全フレームを返す。
 
     out_dir 指定時は PNG 保存もする (デバッグ用)。複数ファイルは連結扱いし、
     timestamp は連結後の通算秒を持つ。
@@ -54,7 +56,7 @@ def extract_frames(
     """
     # ターゲット fps の値域検証. _safe_fps は動画側 src_fps しか健全化しないため、
     # ここで 0/負/非有限を弾かないと後段の src_fps / fps が ZeroDivisionError 等で落ちる.
-    if not math.isfinite(fps) or fps <= 0:
+    if fps is not None and (not math.isfinite(fps) or fps <= 0):
         raise ValueError(f"fps must be a positive finite number, got {fps!r}")
     if start is not None and end is not None and end <= start:
         raise ValueError(f"end must be greater than start (got {start}, {end})")
@@ -69,7 +71,7 @@ def extract_frames(
             if not cap.isOpened():
                 raise RuntimeError(f"failed to open video: {video_path}")
             src_fps = _safe_fps(cap.get(cv2.CAP_PROP_FPS))
-            step = max(1, int(round(src_fps / fps)))
+            step = 1 if fps is None else max(1, int(round(src_fps / fps)))
 
             # メタデータのフレーム数 (0/-1/VFR で不正なことがある). 健全な時のみ
             # 区間外動画の丸ごとスキップと seek 後のオフセット前進に使う.

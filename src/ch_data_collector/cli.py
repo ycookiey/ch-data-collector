@@ -66,7 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--master-dir", type=Path, default=None)
     parser.add_argument("--frames-dir", type=Path, default=None)
-    parser.add_argument("--fps", type=float, default=5.0)
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="フェーズ2 (技一覧の読み取り) の fps. 既定は動画の fps で、全フレームを読む."
+        " 処理が重いときは下げられるが、スクロール中の行を読み落としやすくなる",
+    )
     parser.add_argument(
         "--start",
         type=float,
@@ -247,10 +253,46 @@ def _merge_second_pass(
         )
 
 
+def _is_unknown(name: str) -> bool:
+    return name.startswith("(unknown")
+
+
 def _write_output(output: dict[str, list[str]], path: Path) -> None:
+    # 種族を特定できなかった区間 "(unknown N)" は提出の検証を通らないので書き出さない.
+    # output 側には残し、2 周目の統合 (_merge_second_pass) と最後の報告に使う.
+    identified = {k: v for k, v in output.items() if not _is_unknown(k)}
     path.write_text(
-        json.dumps(output, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(identified, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+    )
+
+
+def _quote(arg: str) -> str:
+    return f'"{arg}"' if " " in arg else arg
+
+
+def _report_unknown(
+    output: dict[str, list[str]],
+    output_path: Path,
+    segments_path: Path,
+    videos: list[Path],
+) -> None:
+    """出力から外した "(unknown N)" のセグメントと、候補から選び直す方法を表示する."""
+    unknown = [k for k in output if _is_unknown(k)]
+    if not unknown:
+        return
+    print(
+        f"\n種族を特定できなかった {len(unknown)} セグメントは "
+        f"{output_path} に含めていない:"
+    )
+    for k in unknown:
+        print(f"  {k}: {len(output[k])} 技")
+    video_args = " ".join(_quote(str(v)) for v in videos)
+    print(
+        "  種族を候補から選び直すには、--no-prompt を付けずにセグメント番号を指定し、"
+        "別のファイルへ出力する (候補が1つも無かったセグメントは同じ結果になる):\n"
+        f"    ch-data-collector {video_args} --segments {_quote(str(segments_path))}"
+        " --only <セグメント番号> -o <別のファイル>"
     )
 
 
@@ -314,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         if not v.exists():
             print(f"video not found: {v}", file=sys.stderr)
             return 2
-    if args.fps <= 0:
+    if args.fps is not None and args.fps <= 0:
         print(f"--fps must be positive (got {args.fps})", file=sys.stderr)
         return 2
     if (
@@ -403,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     _write_output(output, args.output)
 
     print(f"\nwrote {args.output}")
+    _report_unknown(output, args.output, seg_path, args.videos)
     return 0
 
 
