@@ -22,9 +22,9 @@ uv sync
 uv run ch-data-collector video.mp4 -o learnset.json --fps 60
 ```
 
-`--fps` には、連続スクロールで各行を取りこぼさないよう動画の実fps（通常 30 / 60）を指定してください。指定しないと既定値の 5 になり、スクロール中の行を読み落とします。出力は `{ pokemonName: [moveName, ...] }` のJSONで、ポケモン名は公開データの表記へ正規化されます。その他のオプションは `--help` を参照してください。
+`--fps` には、連続スクロールで各行を取りこぼさないよう動画の実fps（通常 30 / 60）を指定してください。出力は `{ pokemonName: [moveName, ...] }` のJSONで、ポケモン名は公開データの表記へ正規化されます。その他のオプションは `--help` を参照してください。
 
-得られた JSON は、公開データリポジトリの [「技データの提出」issue](https://github.com/ycookiey/pokemon-champions-data/issues/new?template=collect.yml) に貼り付けて送ると、自動で検証されデータ追加の Pull Request が作成されます。ポケモンを特定できなかった区間は `(unknown 3)` のような名前で出力され、検証で弾かれるため、貼り付ける前に削除してください。
+得られた JSON は、公開データリポジトリの [「技データの提出」issue](https://github.com/ycookiey/pokemon-champions-data/issues/new?template=collect.yml) に貼り付けて送ると、自動で検証されデータ追加の Pull Request が作成されます。
 
 ## ライセンス
 
