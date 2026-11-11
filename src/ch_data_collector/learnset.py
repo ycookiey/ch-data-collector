@@ -94,8 +94,8 @@ def fuzzy_match_move(
     スコアは文字種正規化 (_kana_normalize) 後の Levenshtein 正規化類似度.
     位置依存の編集距離なので、連続部分文字列を共有しても位置がずれた候補 (例:
     'なゆきり' vs 'こなゆき'=共通"なゆき"だが全体としては別物) を低く評価する.
-    LCS 系 (SequenceMatcher/Indel) は連続部分文字列重視で位置ずれに鈍感で、
-    OCR 1 文字ブレが別技に誤マッチする事故 (なゆきり→こなゆき等) を起こしていた.
+    LCS系(SequenceMatcher・Indel)は連続部分文字列を重視して位置ずれに鈍く、
+    OCRの1文字の誤読で別の技に一致するため使わない. 例: なゆきり→こなゆき.
     rapidfuzz の cdist で全候補を一括計算する (C++ 実装で素朴ループより十分速い).
     """
     if not ocr_text:
